@@ -1,4 +1,5 @@
 require 'sinatra'
+require 'sinatra/streaming'
 require 'sprockets'
 require 'sinatra/content_for'
 require 'rufus/scheduler'
@@ -33,7 +34,7 @@ set :root, Dir.pwd
 set :sprockets,     Sprockets::Environment.new(settings.root)
 set :assets_prefix, '/assets'
 set :digest_assets, false
-set server: 'puma', connections: [], history_file: 'history.yml'
+set server: 'puma', next_events: [], history_file: 'history.yml'
 set :public_folder, File.join(settings.root, 'public')
 set :views, File.join(settings.root, 'dashboards')
 set :default_dashboard, nil
@@ -72,10 +73,13 @@ end
 get '/events', provides: 'text/event-stream' do
   protected!
   response.headers['X-Accel-Buffering'] = 'no' # Disable buffering for nginx
-  stream :keep_open do |out|
-    settings.connections << out
+  stream do |out|
     out << latest_events
-    out.callback { settings.connections.delete(out) }
+    loop do
+      while event = settings.next_events.shift do
+        out << event unless out.closed?
+      end
+    end
   end
 end
 
@@ -127,7 +131,7 @@ def send_event(id, body, target=nil)
   body[:updatedAt] ||= Time.now.to_i
   event = format_event(body.to_json, target)
   Sinatra::Application.settings.history[id] = event unless target == 'dashboards'
-  Sinatra::Application.settings.connections.each { |out| out << event }
+  Sinatra::Application.settings.next_events << event
 end
 
 def format_event(body, name=nil)
